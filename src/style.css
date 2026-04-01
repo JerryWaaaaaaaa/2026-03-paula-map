@@ -14,6 +14,7 @@ body {
 }
 
 #app {
+  position: relative;
   width: 100%;
   height: 100%;
 }
@@ -21,4 +22,39 @@ body {
 canvas {
   display: block;
   vertical-align: top;
+}
+
+.font-size-scaler {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: rgba(11, 18, 32, 0.82);
+  border: 1px solid rgba(201, 162, 39, 0.35);
+  font-family: Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  font-size: 13px;
+  color: #e8e4dc;
+  backdrop-filter: blur(8px);
+}
+
+.font-size-scaler__label {
+  flex-shrink: 0;
+  font-weight: 500;
+}
+
+.font-size-scaler input[type='range'] {
+  width: 140px;
+  vertical-align: middle;
+}
+
+.font-size-scaler__value {
+  flex-shrink: 0;
+  min-width: 3.25rem;
+  font-variant-numeric: tabular-nums;
+  color: #c9a227;
 }
