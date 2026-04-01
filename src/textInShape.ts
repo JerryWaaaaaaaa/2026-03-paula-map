@@ -1,16 +1,82 @@
 import { prepareWithSegments, layoutNextLine, type PreparedTextWithSegments, type LayoutCursor } from '@chenglou/pretext'
 import type { Pt } from './chinaOutline'
-import { intervalsAtY, widestInterval } from './chinaOutline'
+import { intervalsAtY, outsideIntervalsAtY } from './chinaOutline'
 
 export type TextInShapeOptions = {
   font: string
   lineHeight: number
   chordPadding: number
   minChordCssPx: number
-  textFillStyle: string
+  /** Cycle through these for each word (global order while drawing). */
+  wordColors: string[]
+}
+
+
+/** Draw one laid-out line with a color per word; advances `wordIndex`. */
+function fillLineWordColors(
+  ctx: CanvasRenderingContext2D,
+  lineText: string,
+  startX: number,
+  y: number,
+  palette: string[],
+  wordIndex: { value: number },
+): void {
+  const words = lineText.split(/\s+/).filter(Boolean)
+  if (words.length === 0 || palette.length === 0) return
+  const spaceW = ctx.measureText(' ').width
+  let x = startX
+  for (let i = 0; i < words.length; i++) {
+    if (i > 0) x += spaceW
+    ctx.fillStyle = palette[wordIndex.value % palette.length]
+    wordIndex.value++
+    const w = words[i]
+    ctx.fillText(w, x, y)
+    x += ctx.measureText(w).width
+  }
 }
 
 const START_CURSOR: LayoutCursor = { segmentIndex: 0, graphemeIndex: 0 }
+
+/** Fill the viewport outside the China polygon with text (one line per outside span per row). */
+export function drawSurroundingText(
+  ctx: CanvasRenderingContext2D,
+  poly: Pt[],
+  canvasW: number,
+  canvasH: number,
+  prepared: PreparedTextWithSegments,
+  opts: TextInShapeOptions,
+): void {
+  const { font, lineHeight, chordPadding, minChordCssPx, wordColors } = opts
+  ctx.font = font
+  ctx.textBaseline = 'alphabetic'
+  const wordIndex = { value: 0 }
+
+  let cursor = START_CURSOR
+  let y = lineHeight * 0.85
+  const yMax = canvasH - 4
+
+  scanline: while (y < yMax) {
+    const intervals = outsideIntervalsAtY(poly, y, canvasW)
+    const spans = intervals
+      .filter((s) => s.right - s.left >= minChordCssPx)
+      .sort((a, b) => a.left - b.left)
+    if (spans.length === 0) {
+      y += lineHeight
+      continue
+    }
+    for (const span of spans) {
+      const maxWidth = Math.max(4, span.right - span.left - chordPadding * 2)
+      const line = layoutNextLine(prepared, cursor, maxWidth)
+      if (!line) break scanline
+
+      const lineW = line.width
+      const x = span.left + chordPadding + Math.max(0, (maxWidth - lineW) / 2)
+      fillLineWordColors(ctx, line.text, x, y, wordColors, wordIndex)
+      cursor = line.end
+    }
+    y += lineHeight
+  }
+}
 
 export function drawChinaText(
   ctx: CanvasRenderingContext2D,
@@ -18,30 +84,34 @@ export function drawChinaText(
   prepared: PreparedTextWithSegments,
   opts: TextInShapeOptions,
 ): void {
-  const { font, lineHeight, chordPadding, minChordCssPx, textFillStyle } = opts
+  const { font, lineHeight, chordPadding, minChordCssPx, wordColors } = opts
   ctx.font = font
-  ctx.fillStyle = textFillStyle
   ctx.textBaseline = 'alphabetic'
+  const wordIndex = { value: 0 }
 
   let cursor = START_CURSOR
   let y = polyBoundsTop(poly) + lineHeight * 0.85
   const yMax = polyBoundsBottom(poly) - 4
 
-  while (y < yMax) {
+  scanline: while (y < yMax) {
     const intervals = intervalsAtY(poly, y)
-    const span = widestInterval(intervals)
-    if (!span || span.right - span.left < minChordCssPx) {
+    const spans = intervals
+      .filter((s) => s.right - s.left >= minChordCssPx)
+      .sort((a, b) => a.left - b.left)
+    if (spans.length === 0) {
       y += lineHeight
       continue
     }
-    const maxWidth = Math.max(4, span.right - span.left - chordPadding * 2)
-    const line = layoutNextLine(prepared, cursor, maxWidth)
-    if (!line) break
+    for (const span of spans) {
+      const maxWidth = Math.max(4, span.right - span.left - chordPadding * 2)
+      const line = layoutNextLine(prepared, cursor, maxWidth)
+      if (!line) break scanline
 
-    const lineW = line.width
-    const x = span.left + chordPadding + Math.max(0, (maxWidth - lineW) / 2)
-    ctx.fillText(line.text, x, y)
-    cursor = line.end
+      const lineW = line.width
+      const x = span.left + chordPadding + Math.max(0, (maxWidth - lineW) / 2)
+      fillLineWordColors(ctx, line.text, x, y, wordColors, wordIndex)
+      cursor = line.end
+    }
     y += lineHeight
   }
 }

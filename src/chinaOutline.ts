@@ -106,6 +106,62 @@ export function projectRingToCanvas(
   return { points, bounds: { minX, maxX, minY, maxY } }
 }
 
+/**
+ * Uniform scale + center arbitrary outline points (e.g. from SVG) into the canvas.
+ * Y axis matches SVG/canvas (down). `padding` is inset from each viewport edge — tune in the app UI (Map tuning panel).
+ */
+export function fitPointsToCanvas(pts: Pt[], canvasCssW: number, canvasCssH: number, padding: number): Pt[] {
+  if (pts.length === 0) return []
+  let minX = Infinity,
+    maxX = -Infinity,
+    minY = Infinity,
+    maxY = -Infinity
+  for (const p of pts) {
+    minX = Math.min(minX, p.x)
+    maxX = Math.max(maxX, p.x)
+    minY = Math.min(minY, p.y)
+    maxY = Math.max(maxY, p.y)
+  }
+  const w = maxX - minX || 1
+  const h = maxY - minY || 1
+  const innerW = canvasCssW - padding * 2
+  const innerH = canvasCssH - padding * 2
+  const scale = Math.min(innerW / w, innerH / h)
+  const offX = padding + (innerW - w * scale) / 2
+  const offY = padding + (innerH - h * scale) / 2
+  return pts.map((p) => ({
+    x: offX + (p.x - minX) * scale,
+    y: offY + (p.y - minY) * scale,
+  }))
+}
+
+/**
+ * Chaikin corner-cutting for a closed ring: softens sharp corners without changing the overall silhouette much.
+ * More iterations = smoother (and slightly more area shrink). Use 1–3 for a subtly rounded outline.
+ */
+export function smoothClosedPolygon(poly: Pt[], iterations: number): Pt[] {
+  if (poly.length < 3 || iterations <= 0) return poly
+  let pts = poly
+  for (let k = 0; k < iterations; k++) {
+    const n = pts.length
+    const next: Pt[] = []
+    for (let i = 0; i < n; i++) {
+      const p = pts[i]
+      const q = pts[(i + 1) % n]
+      next.push({
+        x: 0.75 * p.x + 0.25 * q.x,
+        y: 0.75 * p.y + 0.25 * q.y,
+      })
+      next.push({
+        x: 0.25 * p.x + 0.75 * q.x,
+        y: 0.25 * p.y + 0.75 * q.y,
+      })
+    }
+    pts = next
+  }
+  return pts
+}
+
 function dedupeSorted(xs: number[], eps = 1e-4): number[] {
   const out: number[] = []
   for (const x of xs) {
@@ -144,6 +200,21 @@ export function intervalsAtY(poly: Pt[], y: number): Interval[] {
 export function widestInterval(intervals: Interval[]): Interval | null {
   if (intervals.length === 0) return null
   return intervals.reduce((a, b) => (b.right - b.left > a.right - a.left ? b : a))
+}
+
+/** Horizontal spans outside the polygon: complement of inside intervals within [0, canvasW]. */
+export function outsideIntervalsAtY(poly: Pt[], y: number, canvasW: number): Interval[] {
+  const inside = intervalsAtY(poly, y)
+  if (inside.length === 0) return [{ left: 0, right: canvasW }]
+  const sorted = [...inside].sort((a, b) => a.left - b.left)
+  const out: Interval[] = []
+  let x = 0
+  for (const seg of sorted) {
+    if (seg.left > x) out.push({ left: x, right: Math.min(seg.left, canvasW) })
+    x = Math.max(x, seg.right)
+  }
+  if (x < canvasW) out.push({ left: x, right: canvasW })
+  return out.filter((s) => s.right - s.left > 0.5)
 }
 
 export async function loadChinaGeoJson(url = '/china.geojson'): Promise<GeoFeatureCollection> {

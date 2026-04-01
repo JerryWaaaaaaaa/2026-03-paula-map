@@ -13,6 +13,8 @@
     "vite": "^8.0.1"
   },
   "dependencies": {
-    "@chenglou/pretext": "^0.0.3"
+    "@chenglou/pretext": "^0.0.3",
+    "@fontsource/geist-sans": "^5.2.5",
+    "lil-gui": "^0.21.0"
   }
 }
