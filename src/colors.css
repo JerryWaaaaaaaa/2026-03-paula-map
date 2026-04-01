@@ -1,0 +1,40 @@
+/**
+ * Project design tokens — single source of truth.
+ * Colors: var(--color-*) in CSS; readThemeColors() in themeColors.ts for canvas.
+ * Fonts: --font-map (canvas map text), --font-ui (HTML UI); map font in main.ts via getComputedStyle(--font-map).
+ */
+
+:root {
+  /* Typography — canvas map text uses --font-map; HTML UI (panels, controls) uses --font-ui */
+  --font-map: Tanker, system-ui, sans-serif;
+  --font-ui: 'Geist Sans', system-ui, sans-serif;
+
+  /* Surface */
+  --color-bg-canvas: #0e1220;
+  --color-bg-surface: #F1E3E5;
+
+  /* Text — on surface (inside map) */
+  --color-text-primary: #6b3d7a;
+  --color-text-secondary: #3c3c78;
+  --color-text-tertiary: #1e3c5a;
+  --color-text-accent: #783c5a;
+  --color-text-accent-muted: #b45a78;
+  --color-text-link: #3c5a96;
+
+  /* Text — on canvas (outside map) */
+  --color-text-on-canvas-primary: #19324b; /* dark teal-navy */
+  --color-text-on-canvas-secondary: #32324b; /* muted indigo */
+  --color-text-on-canvas-accent: #64324b; /* dark rose */
+  --color-text-on-canvas-subtle-green: #3c6450; /* muted forest green */
+  --color-text-on-canvas-green: #507864; /* medium sage green */
+  --color-text-on-canvas-gold: #a07850; /* warm gold */
+  --color-text-on-canvas-gold-muted: #c8a078; /* pale gold */
+  --color-text-on-canvas-gold-dark: #78643c; /* deep ochre */
+
+  /* UI / outline — map fill is --color-bg-surface; stroke color used by canvas `strokePolygon` */
+  --color-map-stroke: rgba(120, 60, 90, 0.55);
+  --color-ui-panel-bg: rgba(14, 18, 32, 0.88);
+  --color-ui-panel-border: rgba(100, 50, 75, 0.35);
+  --color-ui-panel-text: #ece7ed;
+  --color-ui-panel-accent: #b45a78;
+}
