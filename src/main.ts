@@ -1,6 +1,6 @@
 import './style.css'
 import GUI from 'lil-gui'
-import { drawWordsInShape, drawWordsAroundShape } from './textInShape'
+import { drawWordsInShape, drawWordsAroundShape, type WordHitBox } from './textInShape'
 import {
   type PngMask,
   loadPngMask,
@@ -27,6 +27,10 @@ const params = {
   mapPadding:      30,
   charWScale:      1.45,
   lineHeightScale: 1.6,
+  innerHoverRadiusX: 20,
+  innerHoverRadiusY: 3,
+  outerHoverRadiusX: 11,
+  outerHoverRadiusY: 7,
 }
 
 const gui = new GUI({ title: 'Text Controls' })
@@ -35,6 +39,10 @@ gui.add(params, 'lineHeight',      7,   22,  0.5 ).name('Line Height').onChange(
 gui.add(params, 'mapPadding',      0,  120,  1   ).name('Map Padding').onChange(renderFrame)
 gui.add(params, 'charWScale',      0.5,  3,  0.05).name('Char Width Scale').onChange(renderFrame)
 gui.add(params, 'lineHeightScale', 0.5,  3,  0.05).name('Line Height Scale').onChange(renderFrame)
+gui.add(params, 'innerHoverRadiusX', 0, 20, 1).name('Inner Hover X')
+gui.add(params, 'innerHoverRadiusY', 0, 20, 1).name('Inner Hover Y')
+gui.add(params, 'outerHoverRadiusX', 0, 20, 1).name('Outer Hover X')
+gui.add(params, 'outerHoverRadiusY', 0, 20, 1).name('Outer Hover Y')
 
 // ─── DOM Structure ────────────────────────────────────────────────────────────
 
@@ -74,6 +82,13 @@ function sizeCanvas(): { w: number; h: number } {
 let panX = 0
 let panY = 0
 
+// ─── Hover ────────────────────────────────────────────────────────────────────
+
+let innerBoxes: WordHitBox[] = []
+let outerBoxes: WordHitBox[] = []
+let hoveredInner: WordHitBox | null = null
+let hoveredOuter: WordHitBox | null = null
+
 type PanState = {
   pid: number
   startCX: number
@@ -96,6 +111,8 @@ canvas.addEventListener('pointerdown', (e) => {
   }
   canvas.setPointerCapture(e.pointerId)
   document.body.classList.add('is-panning')
+  hoveredInner = null
+  hoveredOuter = null
 })
 
 canvas.addEventListener('pointermove', (e) => {
@@ -122,6 +139,21 @@ const endPan = (e: PointerEvent): void => {
 }
 canvas.addEventListener('pointerup', endPan)
 canvas.addEventListener('pointercancel', endPan)
+
+canvas.addEventListener('mousemove', (e) => {
+  if (panState) return
+  const mx = e.clientX
+  const my = e.clientY
+  const hitBox = (boxes: WordHitBox[]) =>
+    boxes.find(b => mx >= b.x && mx < b.x + b.w && my >= b.y && my < b.y + b.h)
+  const ni = hitBox(innerBoxes) ?? null
+  const no = hitBox(outerBoxes) ?? null
+  if (ni?.wordIdx !== hoveredInner?.wordIdx || no?.wordIdx !== hoveredOuter?.wordIdx) {
+    hoveredInner = ni
+    hoveredOuter = no
+    renderFrame()
+  }
+})
 
 // ─── PNG Mask ─────────────────────────────────────────────────────────────────
 
@@ -151,16 +183,27 @@ function renderFrame(): void {
 
   ctx.clearRect(0, 0, w, h)
 
+  outerBoxes = []
+  innerBoxes = []
+
   drawWordsAroundShape(ctx, isCellOutside, w, h, OUTER_WORDS, {
     font: fontSpec,
     lineHeight,
     colors: theme.textOnCanvas,
+    hoveredBox: hoveredOuter ?? undefined,
+    hoverRadiusX: params.outerHoverRadiusX,
+    hoverRadiusY: params.outerHoverRadiusY,
+    onWord: (b) => outerBoxes.push(b),
   })
 
   drawWordsInShape(ctx, isCellInside, w, h, INNER_WORDS, {
     font: fontSpec,
     lineHeight,
     colors: theme.textOnSurface,
+    hoveredBox: hoveredInner ?? undefined,
+    hoverRadiusX: params.innerHoverRadiusX,
+    hoverRadiusY: params.innerHoverRadiusY,
+    onWord: (b) => innerBoxes.push(b),
   })
 }
 

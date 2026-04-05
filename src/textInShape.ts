@@ -252,10 +252,23 @@ export function fillPolygon(ctx: CanvasRenderingContext2D, poly: Pt[], fillStyle
 
 export { prepareWithSegments }
 
+export type WordHitBox = {
+  wordIdx: number
+  x: number
+  y: number
+  w: number
+  h: number
+  color: string
+}
+
 export type WordFillOptions = {
   font: string
   lineHeight: number
   colors: string[]
+  hoveredBox?: WordHitBox
+  hoverRadiusX?: number
+  hoverRadiusY?: number
+  onWord?: (box: WordHitBox) => void
 }
 
 /**
@@ -272,7 +285,9 @@ export function drawWordsInShape(
   words: string[],
   opts: WordFillOptions,
 ): void {
-  const { font, lineHeight, colors } = opts
+  const { font, lineHeight, colors, hoveredBox, hoverRadiusX, hoverRadiusY, onWord } = opts
+  const rx = hoverRadiusX ?? 0
+  const ry = hoverRadiusY ?? 0
   ctx.font = font
   ctx.textBaseline = 'alphabetic'
   const charW = ctx.measureText('M').width
@@ -294,9 +309,22 @@ export function drawWordsInShape(
           const maxLetters = Math.floor((x - cx) / charW)
           if (maxLetters <= 0) break
           const letters = words[wordIdx % words.length].slice(0, maxLetters)
-          ctx.fillStyle = colors[wordIdx % colors.length]
+          const color = colors[(wordIdx * 2654435761 >>> 0) % colors.length]
+          const wordW = letters.length * charW
+          onWord?.({ wordIdx, x: cx, y: rowY, w: wordW, h: lineHeight, color })
+          const isHovered = hoveredBox !== undefined && (
+            Math.abs((cx + wordW / 2) - (hoveredBox.x + hoveredBox.w / 2)) <= rx * charW &&
+            Math.abs((rowY + lineHeight / 2) - (hoveredBox.y + hoveredBox.h / 2)) <= ry * lineHeight
+          )
+          if (isHovered) {
+            ctx.fillStyle = color
+            ctx.fillRect(cx, rowY, wordW, lineHeight)
+            ctx.fillStyle = 'white'
+          } else {
+            ctx.fillStyle = color
+          }
           ctx.fillText(letters, cx, drawY)
-          cx += letters.length * charW
+          cx += wordW
           wordIdx++
         }
         spanStart = null
@@ -321,7 +349,9 @@ export function drawWordsAroundShape(
   words: string[],
   opts: WordFillOptions,
 ): void {
-  const { font, lineHeight, colors } = opts
+  const { font, lineHeight, colors, hoveredBox, hoverRadiusX, hoverRadiusY, onWord } = opts
+  const rx = hoverRadiusX ?? 0
+  const ry = hoverRadiusY ?? 0
   ctx.font = font
   ctx.textBaseline = 'alphabetic'
   const charW = ctx.measureText('M').width
@@ -343,13 +373,26 @@ export function drawWordsAroundShape(
           const maxLetters = Math.floor((y - cy) / charW)
           if (maxLetters <= 0) break
           const letters = words[wordIdx % words.length].slice(0, maxLetters)
-          ctx.fillStyle = colors[wordIdx % colors.length]
+          const color = colors[(wordIdx * 2654435761 >>> 0) % colors.length]
+          const wordH = letters.length * charW
+          onWord?.({ wordIdx, x: colX, y: cy, w: lineHeight, h: wordH, color })
+          const isHovered = hoveredBox !== undefined && (
+            Math.abs((colX + lineHeight / 2) - (hoveredBox.x + hoveredBox.w / 2)) <= rx * lineHeight &&
+            Math.abs((cy + wordH / 2) - (hoveredBox.y + hoveredBox.h / 2)) <= ry * charW
+          )
           ctx.save()
           ctx.translate(colX + baselineOffset, cy)
           ctx.rotate(Math.PI / 2)
+          if (isHovered) {
+            ctx.fillStyle = color
+            ctx.fillRect(0, -lineHeight * 0.85, wordH, lineHeight)
+            ctx.fillStyle = 'white'
+          } else {
+            ctx.fillStyle = color
+          }
           ctx.fillText(letters, 0, 0)
           ctx.restore()
-          cy += letters.length * charW
+          cy += wordH
           wordIdx++
         }
         spanStart = null
