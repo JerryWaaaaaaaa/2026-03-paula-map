@@ -216,6 +216,50 @@ export function subtractIntervalFromSpans(spans: Interval[], blockL: number, blo
   return out.filter((s) => s.right - s.left > 0.5)
 }
 
+/**
+ * Vertical scanline intersections → inside intervals on the Y axis at a given X.
+ * Mirror of intervalsAtY with the x/y roles swapped.
+ */
+export function intervalsAtX(poly: Pt[], x: number): Interval[] {
+  const n = poly.length
+  if (n < 3) return []
+  const ys: number[] = []
+  for (let i = 0; i < n; i++) {
+    const a = poly[i]
+    const b = poly[(i + 1) % n]
+    const xi = a.x
+    const xj = b.x
+    if (Math.abs(xi - xj) < 1e-9) continue
+    if ((xi < x) === (xj < x)) continue
+    const y = a.y + ((x - xi) * (b.y - a.y)) / (xj - xi)
+    ys.push(y)
+  }
+  ys.sort((u, v) => u - v)
+  const clean = dedupeSorted(ys)
+  const out: Interval[] = []
+  for (let i = 0; i + 1 < clean.length; i += 2) {
+    const left = clean[i]
+    const right = clean[i + 1]
+    if (right > left) out.push({ left, right })
+  }
+  return out
+}
+
+/** Vertical spans outside the polygon: complement of inside intervals within [0, canvasH]. */
+export function outsideIntervalsAtX(poly: Pt[], x: number, canvasH: number): Interval[] {
+  const inside = intervalsAtX(poly, x)
+  if (inside.length === 0) return [{ left: 0, right: canvasH }]
+  const sorted = [...inside].sort((a, b) => a.left - b.left)
+  const out: Interval[] = []
+  let y = 0
+  for (const seg of sorted) {
+    if (seg.left > y) out.push({ left: y, right: Math.min(seg.left, canvasH) })
+    y = Math.max(y, seg.right)
+  }
+  if (y < canvasH) out.push({ left: y, right: canvasH })
+  return out.filter((s) => s.right - s.left > 0.5)
+}
+
 /** Horizontal spans outside the polygon: complement of inside intervals within [0, canvasW]. */
 export function outsideIntervalsAtY(poly: Pt[], y: number, canvasW: number): Interval[] {
   const inside = intervalsAtY(poly, y)

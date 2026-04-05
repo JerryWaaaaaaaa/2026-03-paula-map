@@ -6,11 +6,11 @@
 
 :root {
   /* Typography — canvas map text uses --font-map; HTML UI (panels, controls) uses --font-ui */
-  --font-map: Tanker, system-ui, sans-serif;
+  --font-map: 'Geist Mono', monospace;
   --font-ui: 'Geist Sans', system-ui, sans-serif;
 
   /* Surface */
-  --color-bg-canvas: #0e1220;
+  --color-bg-canvas: #f8f6f2;
   --color-bg-surface: #F1E3E5;
 
   /* Text — on surface (inside map) */
@@ -34,6 +34,11 @@
   /* Geo labels on map (canvas) — one color each category */
   --color-map-label-city: #4a2d5c;
   --color-map-label-nature: #2d5a4a;
+
+  /* Negative space (outside map) — DOM vertical text on white bg */
+  --color-text-outside: #b0a898; /* muted taupe — recedes on white, doesn't compete with inside text */
+  /* Placeholder bg shown behind draggable images before they load */
+  --color-image-placeholder: #e0ddd8;
 
   /* UI / outline — map fill is --color-bg-surface; stroke color used by canvas `strokePolygon` */
   --color-map-stroke: rgba(120, 60, 90, 0.55);

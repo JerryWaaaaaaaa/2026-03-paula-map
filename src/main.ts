@@ -1,567 +1,169 @@
 import './style.css'
 import GUI from 'lil-gui'
-import type { Controller } from 'lil-gui'
-import { fitPointsToCanvas, smoothClosedPolygon, type Pt } from './chinaOutline'
+import { drawWordsInShape, drawWordsAroundShape } from './textInShape'
 import {
-  prepareWithSegments,
-  drawSurroundingText,
-  drawChinaText,
-  clipToPolygon,
-  strokePolygon,
-  fillPolygon,
-  measureLabelExclusionRect,
-  type ExclusionRect,
-} from './textInShape'
-import {
-  MAP_FILLER_TEXT,
-  MAJOR_CITIES,
-  NATURAL_FEATURES,
-  OUTSIDE_MAJOR_CITIES,
-  OUTSIDE_NATURAL_FEATURES,
-  SURROUNDING_CITIES_TEXT,
-} from './copy'
-import {
-  GEO_BOUNDS,
-  GEO_BOUNDS_VIEW,
-  lonLatToNormInBounds,
-  normGeoToFittedCanvas,
-  nudgeAnchorOutsidePolygon,
-  snapAnchorIntoPolygon,
-  viewportNormLonLatToPx,
-} from './mapGeo'
+  type PngMask,
+  loadPngMask,
+  computeMaskTransform,
+  maskIntervalsAtY,
+  maskOutsideIntervalsAtX,
+} from './pngMask'
 import { readThemeColors } from './themeColors'
-import { loadSvgOutlinePoints, type SvgOutlineSampleOptions } from './mapShapeSvg'
+import { MAP_FILLER_TEXT, SURROUNDING_CITIES_TEXT } from './copy'
 
-const BASE_FONT_PX = 9
-const BASE_LINE_HEIGHT = 10
-const BASE_CHORD_PAD = 2
-const BASE_MIN_CHORD = 10
-/** Fixed CSS px for major city / natural geo labels (not tied to the Text size slider). */
-const LABEL_FONT_PX = 25
-const LABEL_PAD_PX = 6
+// ─── Constants ────────────────────────────────────────────────────────────────
 
-/**
- * Map tuning — bound to lil-gui sliders (`tuningState`).
- *
- * - padding: Inset from the viewport; smaller = map can grow, larger = more empty border around the shape.
- * - outlineSmoothIterations: Chaikin smoothing passes on the fitted polygon (0 = sharp, 2–3 typical).
- * - mapStrokeWidth: Canvas stroke width in CSS pixels for the map outline (`strokePolygon`).
- * - svgMinSegments / svgMaxSegments / svgLengthDivisor: How `map.svg` path is sampled into points
- *   (see `SvgOutlineSampleOptions` in `mapShapeSvg.ts`). Changing these reloads the outline.
- * - fontScale: Typography scale for filler text inside the map and surrounding ring (Tanker). Geo labels use a fixed size.
- *
- * Colors: `--color-bg-surface` (fill inside map), `--color-map-stroke`, `--color-bg-canvas` in `colors.css`.
- */
-type MapTuning = {
-  padding: number
-  outlineSmoothIterations: number
-  mapStrokeWidth: number
-  svgMinSegments: number
-  svgMaxSegments: number
-  svgLengthDivisor: number
+const FONT_FAMILY = "'Geist Mono', monospace"
+
+// Word arrays — color cycles once per word; truncation cuts within a word at span edges
+const INNER_WORDS = Array(50).fill(MAP_FILLER_TEXT).join(' ').toUpperCase().split(/\s+/).filter(Boolean)
+const OUTER_WORDS = Array(30).fill(SURROUNDING_CITIES_TEXT).join(' ').toUpperCase().split(/\s+/).filter(Boolean)
+
+// ─── GUI Params ───────────────────────────────────────────────────────────────
+
+const params = {
+  fontSize:      9,
+  lineHeight:    10.5,
+  mapPadding:    40,
+  overlapBuffer: 1.0,
 }
 
-type TuningState = MapTuning & { fontScale: number }
+const gui = new GUI({ title: 'Text Controls' })
+gui.add(params, 'fontSize',      6,   18,  0.5).name('Font Size').onChange(renderFrame)
+gui.add(params, 'lineHeight',    7,   22,  0.5).name('Line Height').onChange(renderFrame)
+gui.add(params, 'mapPadding',    0,  120,  1  ).name('Map Padding').onChange(renderFrame)
+gui.add(params, 'overlapBuffer', 0,    3,  0.1).name('Overlap Buffer').onChange(renderFrame)
 
-const defaultMapTuning: MapTuning = {
-  padding: 28,
-  outlineSmoothIterations: 2,
-  mapStrokeWidth: 1.25,
-  svgMinSegments: 120,
-  svgMaxSegments: 3000,
-  svgLengthDivisor: 1.5,
-}
-
-const defaultTuningState: TuningState = { ...defaultMapTuning, fontScale: 1 }
-
-let tuningState: TuningState = { ...defaultTuningState }
-
-/** Persisted slider defaults (localStorage). "Save all as defaults" writes every key. */
-const TUNING_DEFAULTS_STORAGE_KEY = 'paula-map-tuning-defaults-v1'
-
-type TuningDefaultKey = keyof TuningState
-
-function clamp(n: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, n))
-}
-
-/** Apply saved defaults from localStorage (clamped to slider ranges). Call before first render. */
-function applyStoredTuningDefaults(): void {
-  try {
-    const raw = localStorage.getItem(TUNING_DEFAULTS_STORAGE_KEY)
-    if (!raw) return
-    const o = JSON.parse(raw) as Record<string, unknown>
-    const num = (k: string, min: number, max: number) => {
-      const v = o[k]
-      if (typeof v !== 'number' || !Number.isFinite(v)) return undefined
-      return clamp(v, min, max)
-    }
-
-    const p = num('padding', 0, 200)
-    if (p !== undefined) tuningState.padding = p
-    const os = num('outlineSmoothIterations', 0, 8)
-    if (os !== undefined) tuningState.outlineSmoothIterations = Math.round(os)
-    const sw = num('mapStrokeWidth', 0, 8)
-    if (sw !== undefined) tuningState.mapStrokeWidth = sw
-    const smin = num('svgMinSegments', 20, 2000)
-    if (smin !== undefined) tuningState.svgMinSegments = Math.round(smin)
-    const smax = num('svgMaxSegments', 100, 8000)
-    if (smax !== undefined) tuningState.svgMaxSegments = Math.round(smax)
-    const sd = num('svgLengthDivisor', 0.25, 6)
-    if (sd !== undefined) tuningState.svgLengthDivisor = sd
-    const fs = num('fontScale', 0.5, 2)
-    if (fs !== undefined) tuningState.fontScale = fs
-  } catch {
-    /* ignore corrupt storage */
-  }
-}
-
-function saveTuningDefault(key: TuningDefaultKey, value: number): void {
-  try {
-    const raw = localStorage.getItem(TUNING_DEFAULTS_STORAGE_KEY)
-    const o: Record<string, number> = raw ? (JSON.parse(raw) as Record<string, number>) : {}
-    o[key] = value
-    localStorage.setItem(TUNING_DEFAULTS_STORAGE_KEY, JSON.stringify(o))
-  } catch {
-    /* quota / private mode */
-  }
-}
-
-function saveAllTuningDefaults(): void {
-  ;(Object.keys(tuningState) as TuningDefaultKey[]).forEach((k) => saveTuningDefault(k, tuningState[k]))
-}
-
-/** Pretext `prepare()` is canvas-heavy; debounce while dragging the text-size slider. */
-const PREPARE_DEBOUNCE_MS = 110
-
-/** Fewer repeats = faster Pretext `prepare()`; still enough to fill the map at typical sizes. */
-const INNER_REPEAT = 42
-const OUTER_REPEAT = 28
-const TEXT_CORPUS = Array(INNER_REPEAT).fill(MAP_FILLER_TEXT).join(' ')
-const SURROUND_CORPUS = Array(OUTER_REPEAT).fill(SURROUNDING_CITIES_TEXT).join(' ')
-
-/** Canvas map text only — family stack from `colors.css` `--font-map` (Tanker). UI uses `--font-ui` (Geist) in CSS. */
-let mapFontStackCached: string | null = null
-function getMapFontStack(): string {
-  if (mapFontStackCached === null) {
-    mapFontStackCached =
-      getComputedStyle(document.documentElement).getPropertyValue('--font-map').trim() ||
-      'Tanker, system-ui, sans-serif'
-  }
-  return mapFontStackCached
-}
-
-function getTextMetrics(scale: number) {
-  const fontPx = Math.max(4, Math.round(BASE_FONT_PX * scale * 10) / 10)
-  const lineHeight = Math.round(BASE_LINE_HEIGHT * scale * 10) / 10
-  const chordPadding = Math.max(1, Math.round(BASE_CHORD_PAD * scale * 10) / 10)
-  const minChordCssPx = Math.max(4, Math.round(BASE_MIN_CHORD * scale * 10) / 10)
-  return {
-    font: `400 ${fontPx}px ${getMapFontStack()}`,
-    lineHeight,
-    chordPadding,
-    minChordCssPx,
-  }
-}
-
-function getLabelFont(): string {
-  return `400 ${LABEL_FONT_PX}px ${getMapFontStack()}`
-}
-
-let preparedInner: ReturnType<typeof prepareWithSegments>
-let preparedOuter: ReturnType<typeof prepareWithSegments>
-
-function rebuildPrepared() {
-  const font = getTextMetrics(tuningState.fontScale).font
-  preparedInner = prepareWithSegments(TEXT_CORPUS, font)
-  preparedOuter = prepareWithSegments(SURROUND_CORPUS, font)
-}
-
-const canvas = document.createElement('canvas')
-const ctxRaw = canvas.getContext('2d')
-if (!ctxRaw) throw new Error('Canvas unsupported')
-const ctx = ctxRaw
+// ─── DOM Structure ────────────────────────────────────────────────────────────
 
 const root = document.querySelector<HTMLDivElement>('#app')!
-root.appendChild(canvas)
 
-/** Viewport pan (CSS px); map + text use the same offset via `displayPoly` in `renderFrame`. */
+const canvas = document.createElement('canvas')
+canvas.id = 'map-canvas'
+canvas.setAttribute('aria-label', 'Map filled with text — drag to pan')
+root.appendChild(canvas)
+const ctx = canvas.getContext('2d')!
+
+// ─── Canvas Sizing ────────────────────────────────────────────────────────────
+
+let lastW = 0
+let lastH = 0
+let lastDpr = 0
+
+function sizeCanvas(): { w: number; h: number } {
+  const dpr = Math.min(window.devicePixelRatio ?? 1, 2)
+  const w = window.innerWidth
+  const h = window.innerHeight
+  canvas.style.width = `${w}px`
+  canvas.style.height = `${h}px`
+  if (w !== lastW || h !== lastH || dpr !== lastDpr) {
+    lastW = w
+    lastH = h
+    lastDpr = dpr
+    canvas.width = Math.floor(w * dpr)
+    canvas.height = Math.floor(h * dpr)
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+  }
+  return { w, h }
+}
+
+// ─── Pan ──────────────────────────────────────────────────────────────────────
+
 let panX = 0
 let panY = 0
 
-type PanDragState = {
-  startClientX: number
-  startClientY: number
-  startPanX: number
-  startPanY: number
-  pointerId: number
+type PanState = {
+  pid: number
+  startCX: number
+  startCY: number
+  startPX: number
+  startPY: number
 } | null
 
-let panDrag: PanDragState = null
-let panRenderScheduled = false
+let panState: PanState = null
+let panRaf = 0
 
-let lastCssW = 0
-let lastCssH = 0
-let lastDpr = 0
-
-function sizeCanvas(): { cssW: number; cssH: number } {
-  const dpr = Math.min(window.devicePixelRatio ?? 1, 2)
-  const cssW = window.innerWidth
-  const cssH = window.innerHeight
-  canvas.style.width = `${cssW}px`
-  canvas.style.height = `${cssH}px`
-  if (cssW !== lastCssW || cssH !== lastCssH || dpr !== lastDpr) {
-    lastCssW = cssW
-    lastCssH = cssH
-    lastDpr = dpr
-    canvas.width = Math.floor(cssW * dpr)
-    canvas.height = Math.floor(cssH * dpr)
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+canvas.addEventListener('pointerdown', (e) => {
+  if (e.button !== 0) return
+  panState = {
+    pid: e.pointerId,
+    startCX: e.clientX,
+    startCY: e.clientY,
+    startPX: panX,
+    startPY: panY,
   }
-  return { cssW, cssH }
-}
+  canvas.setPointerCapture(e.pointerId)
+  document.body.classList.add('is-panning')
+})
 
-/** Raw points from `map.svg` (sampling controlled by tuningState SVG fields). */
-let outlineFromSvg: Pt[] = []
-/** Bumped when `outlineFromSvg` is replaced so smoothed-point cache cannot go stale. */
-let outlineVersion = 0
-
-function svgSampleOpts(): SvgOutlineSampleOptions {
-  return {
-    minSegments: tuningState.svgMinSegments,
-    maxSegments: tuningState.svgMaxSegments,
-    lengthDivisor: tuningState.svgLengthDivisor,
+canvas.addEventListener('pointermove', (e) => {
+  if (!panState || panState.pid !== e.pointerId) return
+  panX = panState.startPX + (e.clientX - panState.startCX)
+  panY = panState.startPY + (e.clientY - panState.startCY)
+  if (!panRaf) {
+    panRaf = requestAnimationFrame(() => {
+      panRaf = 0
+      renderFrame()
+    })
   }
-}
+})
 
-async function reloadOutlineFromSvg(): Promise<void> {
-  outlineFromSvg = await loadSvgOutlinePoints('/map.svg', svgSampleOpts())
-  outlineVersion += 1
-}
-
-let smoothedPointsCache: { key: string; points: Pt[] } | null = null
-
-function invalidateOutlineCache() {
-  smoothedPointsCache = null
-}
-
-function getSmoothedOutline(cssW: number, cssH: number): Pt[] {
-  const key = `${outlineVersion}_${cssW}x${cssH}_${tuningState.padding}_${tuningState.outlineSmoothIterations}`
-  if (smoothedPointsCache?.key === key) return smoothedPointsCache.points
-  const rawPoints = fitPointsToCanvas(outlineFromSvg, cssW, cssH, tuningState.padding)
-  const points = smoothClosedPolygon(rawPoints, tuningState.outlineSmoothIterations)
-  smoothedPointsCache = { key, points }
-  return points
-}
-
-function renderFrame() {
-  const theme = readThemeColors()
-  const { cssW, cssH } = sizeCanvas()
-  const points = getSmoothedOutline(cssW, cssH)
-  const displayPoly = points.map((p) => ({ x: p.x + panX, y: p.y + panY }))
-
-  ctx.fillStyle = theme.bgCanvas
-  ctx.fillRect(0, 0, cssW, cssH)
-
-  const m = getTextMetrics(tuningState.fontScale)
-  const labelFont = getLabelFont()
-
-  type GeoLabelKind = 'city' | 'nature'
-  const outsideLabelQueue: { text: string; cx: number; cy: number; kind: GeoLabelKind }[] = []
-  for (const L of OUTSIDE_MAJOR_CITIES) {
-    const p = viewportNormLonLatToPx(L.lon, L.lat, GEO_BOUNDS_VIEW, cssW, cssH, tuningState.padding)
-    const nudged = nudgeAnchorOutsidePolygon(
-      displayPoly,
-      p.x + panX,
-      p.y + panY,
-    )
-    outsideLabelQueue.push({ text: L.name, cx: nudged.x, cy: nudged.y, kind: 'city' })
-  }
-  for (const L of OUTSIDE_NATURAL_FEATURES) {
-    const p = viewportNormLonLatToPx(L.lon, L.lat, GEO_BOUNDS_VIEW, cssW, cssH, tuningState.padding)
-    const nudged = nudgeAnchorOutsidePolygon(
-      displayPoly,
-      p.x + panX,
-      p.y + panY,
-    )
-    outsideLabelQueue.push({ text: L.name, cx: nudged.x, cy: nudged.y, kind: 'nature' })
-  }
-
-  const outsideLabelExclusions: ExclusionRect[] = []
-  for (const d of outsideLabelQueue) {
-    outsideLabelExclusions.push(measureLabelExclusionRect(ctx, d.text, labelFont, d.cx, d.cy, LABEL_PAD_PX))
-  }
-
-  drawSurroundingText(ctx, displayPoly, cssW, cssH, preparedOuter, {
-    font: m.font,
-    lineHeight: m.lineHeight,
-    chordPadding: m.chordPadding,
-    minChordCssPx: m.minChordCssPx,
-    wordColors: theme.textOnCanvas,
-  }, outsideLabelExclusions)
-
-  fillPolygon(ctx, displayPoly, theme.bgSurface)
-
-  ctx.save()
-  ctx.font = labelFont
-  ctx.textBaseline = 'alphabetic'
-  for (const d of outsideLabelQueue) {
-    ctx.fillStyle = d.kind === 'city' ? theme.mapLabelCity : theme.mapLabelNature
-    const tw = ctx.measureText(d.text).width
-    ctx.fillText(d.text, d.cx - tw / 2, d.cy)
-  }
-  ctx.restore()
-
-  const insideLabelQueue: { text: string; cx: number; cy: number; kind: GeoLabelKind }[] = []
-  for (const L of MAJOR_CITIES) {
-    const { nx, ny } = lonLatToNormInBounds(L.lon, L.lat, GEO_BOUNDS)
-    const p = normGeoToFittedCanvas(nx, ny, outlineFromSvg, cssW, cssH, tuningState.padding)
-    const snapped = snapAnchorIntoPolygon(displayPoly, p.x + panX, p.y + panY)
-    insideLabelQueue.push({ text: L.name, cx: snapped.x, cy: snapped.y, kind: 'city' })
-  }
-  for (const L of NATURAL_FEATURES) {
-    const { nx, ny } = lonLatToNormInBounds(L.lon, L.lat, GEO_BOUNDS)
-    const p = normGeoToFittedCanvas(nx, ny, outlineFromSvg, cssW, cssH, tuningState.padding)
-    const snapped = snapAnchorIntoPolygon(displayPoly, p.x + panX, p.y + panY)
-    insideLabelQueue.push({ text: L.name, cx: snapped.x, cy: snapped.y, kind: 'nature' })
-  }
-
-  const labelExclusions: ExclusionRect[] = []
-  for (const d of insideLabelQueue) {
-    labelExclusions.push(measureLabelExclusionRect(ctx, d.text, labelFont, d.cx, d.cy, LABEL_PAD_PX))
-  }
-
-  ctx.save()
-  clipToPolygon(ctx, displayPoly)
-  drawChinaText(
-    ctx,
-    displayPoly,
-    preparedInner,
-    {
-      font: m.font,
-      lineHeight: m.lineHeight,
-      chordPadding: m.chordPadding,
-      minChordCssPx: m.minChordCssPx,
-      wordColors: theme.textOnSurface,
-    },
-    labelExclusions,
-  )
-  ctx.font = labelFont
-  ctx.textBaseline = 'alphabetic'
-  for (const d of insideLabelQueue) {
-    ctx.fillStyle = d.kind === 'city' ? theme.mapLabelCity : theme.mapLabelNature
-    const tw = ctx.measureText(d.text).width
-    ctx.fillText(d.text, d.cx - tw / 2, d.cy)
-  }
-  ctx.restore()
-
-  strokePolygon(ctx, displayPoly, theme.mapStroke, tuningState.mapStrokeWidth)
-}
-
-function schedulePanRender(): void {
-  if (panRenderScheduled) return
-  panRenderScheduled = true
-  requestAnimationFrame(() => {
-    panRenderScheduled = false
-    renderFrame()
-  })
-}
-
-function endPanDrag(e: PointerEvent): void {
-  if (!panDrag || panDrag.pointerId !== e.pointerId) return
+const endPan = (e: PointerEvent): void => {
+  if (!panState || panState.pid !== e.pointerId) return
+  panState = null
+  document.body.classList.remove('is-panning')
   try {
     canvas.releasePointerCapture(e.pointerId)
   } catch {
     /* already released */
   }
-  panDrag = null
-  document.body.classList.remove('is-dragging-map')
 }
+canvas.addEventListener('pointerup', endPan)
+canvas.addEventListener('pointercancel', endPan)
 
-canvas.addEventListener('pointerdown', (e) => {
-  if (e.button !== 0) return
-  panDrag = {
-    startClientX: e.clientX,
-    startClientY: e.clientY,
-    startPanX: panX,
-    startPanY: panY,
-    pointerId: e.pointerId,
-  }
-  canvas.setPointerCapture(e.pointerId)
-  document.body.classList.add('is-dragging-map')
-})
+// ─── PNG Mask ─────────────────────────────────────────────────────────────────
 
-canvas.addEventListener('pointermove', (e) => {
-  if (!panDrag || panDrag.pointerId !== e.pointerId) return
-  panX = panDrag.startPanX + (e.clientX - panDrag.startClientX)
-  panY = panDrag.startPanY + (e.clientY - panDrag.startClientY)
-  schedulePanRender()
-})
+let mask: PngMask | null = null
 
-canvas.addEventListener('pointerup', endPanDrag)
-canvas.addEventListener('pointercancel', endPanDrag)
+// ─── Render ───────────────────────────────────────────────────────────────────
 
-const TUNING_HINTS: Record<keyof TuningState, string> = {
-  padding:
-    'Inset from the window edge before the map outline is scaled and centered. More padding shrinks the map and adds empty margin. Performance: usually negligible; slightly less map area can mean a bit less text to lay out.',
-  outlineSmoothIterations:
-    'Chaikin smoothing passes on the fitted outline. Higher values round sharp corners more (slightly reduces inner area); zero keeps the raw fitted shape. Performance: each extra pass adds more vertices — larger numbers slow polygon clipping, scanlines, and text layout.',
-  mapStrokeWidth:
-    'Thickness of the border stroke drawn on top of the map polygon (canvas line width in CSS pixels). Does not change fill or text. Performance: impact is tiny (one stroked path per frame).',
-  svgMinSegments:
-    'Minimum number of points sampled along the map.svg path; raises the floor for short paths so the outline stays smooth enough for text layout. Performance: raising this increases vertex count — larger numbers make outline smoothing, clipping, and text placement heavier (the app gets slower).',
-  svgMaxSegments:
-    'Maximum samples along the path; caps point count for very long SVG paths before smoothing. Performance: a higher ceiling allows more points — on big paths, larger values noticeably slow loading and each frame that uses the polygon.',
-  svgLengthDivisor:
-    'Sample count is roughly path length ÷ this value (then clamped by min/max). Lower divisor = more points and a finer polygon. Performance: smaller divisors (more segments) increase CPU and memory for the outline and all text-in-shape work — the app gets slower as segment count goes up.',
-  fontScale:
-    'Scale for filler text inside the outline and the surrounding ring (Tanker). Major city and nature labels stay a fixed size. Performance: larger values mean bigger glyphs and more Pretext “prepare” work — higher scale slows text rebuilds and can make interaction feel heavier until layout finishes.',
-}
+function renderFrame(): void {
+  if (!mask) return
+  const theme = readThemeColors()
+  const { w, h } = sizeCanvas()
+  const { fontSize, lineHeight, mapPadding, overlapBuffer } = params
+  const fontSpec = `400 ${fontSize}px ${FONT_FAMILY}`
 
-function hintController(c: Controller, key: keyof TuningState): void {
-  const text = TUNING_HINTS[key]
-  c.domElement.title = text
-  c.domElement.setAttribute('aria-label', text)
-}
+  const transform = computeMaskTransform(mask.imgW, mask.imgH, w, h, mapPadding, panX, panY)
+  const insideAtY = (y: number) => maskIntervalsAtY(mask!, transform, y, w)
+  const spansAtX  = (x: number) => maskOutsideIntervalsAtX(mask!, transform, x, h, lineHeight * overlapBuffer)
 
-function buildTuningGui() {
-  let svgReloadDebounce: ReturnType<typeof setTimeout> | null = null
-  let prepareDebounce: ReturnType<typeof setTimeout> | null = null
+  ctx.clearRect(0, 0, w, h)
 
-  const scheduleSvgReload = () => {
-    if (svgReloadDebounce !== null) clearTimeout(svgReloadDebounce)
-    svgReloadDebounce = setTimeout(() => {
-      svgReloadDebounce = null
-      void reloadOutlineFromSvg().then(() => {
-        invalidateOutlineCache()
-        requestAnimationFrame(() => renderFrame())
-      })
-    }, 120)
-  }
-
-  const flushSvgReloadNow = () => {
-    if (svgReloadDebounce !== null) {
-      clearTimeout(svgReloadDebounce)
-      svgReloadDebounce = null
-    }
-    void reloadOutlineFromSvg().then(() => {
-      invalidateOutlineCache()
-      requestAnimationFrame(() => renderFrame())
-    })
-  }
-
-  const flushPrepareAndRender = () => {
-    rebuildPrepared()
-    requestAnimationFrame(() => renderFrame())
-  }
-
-  const gui = new GUI({
-    container: root,
-    autoPlace: false,
-    title: 'Map tuning',
-    width: 320,
-    injectStyles: false,
+  drawWordsAroundShape(ctx, spansAtX, w, OUTER_WORDS, {
+    font: fontSpec,
+    lineHeight,
+    colors: theme.textOnCanvas,
   })
 
-  const cPad = gui
-    .add(tuningState, 'padding', 0, 200, 1)
-    .name('Map padding')
-    .onChange(() => {
-      invalidateOutlineCache()
-      requestAnimationFrame(() => renderFrame())
-    })
-  hintController(cPad, 'padding')
-
-  const cSmooth = gui
-    .add(tuningState, 'outlineSmoothIterations', 0, 8, 1)
-    .name('Outline smooth')
-    .onChange(() => {
-      tuningState.outlineSmoothIterations = Math.round(tuningState.outlineSmoothIterations)
-      invalidateOutlineCache()
-      requestAnimationFrame(() => renderFrame())
-    })
-  hintController(cSmooth, 'outlineSmoothIterations')
-
-  const cStroke = gui
-    .add(tuningState, 'mapStrokeWidth', 0, 8, 0.05)
-    .name('Map stroke width')
-    .onChange(() => {
-      requestAnimationFrame(() => renderFrame())
-    })
-  hintController(cStroke, 'mapStrokeWidth')
-
-  const wireSvgField = (key: 'svgMinSegments' | 'svgMaxSegments' | 'svgLengthDivisor', step: number) => {
-    const min = key === 'svgLengthDivisor' ? 0.25 : key === 'svgMinSegments' ? 20 : 100
-    const max = key === 'svgLengthDivisor' ? 6 : key === 'svgMinSegments' ? 2000 : 8000
-    const c = gui
-      .add(tuningState, key, min, max, step)
-      .onChange(() => {
-        if (key !== 'svgLengthDivisor') {
-          tuningState[key] = Math.round(tuningState[key] as number)
-        }
-        scheduleSvgReload()
-      })
-      .onFinishChange(() => {
-        if (key !== 'svgLengthDivisor') {
-          tuningState[key] = Math.round(tuningState[key] as number)
-        }
-        flushSvgReloadNow()
-      })
-    hintController(c, key)
-    if (key === 'svgMinSegments') c.name('SVG min segments')
-    if (key === 'svgMaxSegments') c.name('SVG max segments')
-    if (key === 'svgLengthDivisor') c.name('SVG length ÷')
-  }
-
-  wireSvgField('svgMinSegments', 10)
-  wireSvgField('svgMaxSegments', 50)
-  wireSvgField('svgLengthDivisor', 0.05)
-
-  const cFont = gui
-    .add(tuningState, 'fontScale', 0.5, 2, 0.1)
-    .name('Text size')
-    .onChange(() => {
-      if (prepareDebounce !== null) clearTimeout(prepareDebounce)
-      prepareDebounce = setTimeout(() => {
-        prepareDebounce = null
-        flushPrepareAndRender()
-      }, PREPARE_DEBOUNCE_MS)
-    })
-    .onFinishChange(() => {
-      if (prepareDebounce !== null) {
-        clearTimeout(prepareDebounce)
-        prepareDebounce = null
-      }
-      flushPrepareAndRender()
-    })
-  hintController(cFont, 'fontScale')
-
-  const defaults = {
-    saveAllDefaults() {
-      saveAllTuningDefaults()
-    },
-  }
-  const cSave = gui.add(defaults, 'saveAllDefaults').name('Save all as defaults')
-  cSave.domElement.title =
-    'Writes every slider value to localStorage (same keys as before). Hover other rows for full help text.'
+  drawWordsInShape(ctx, insideAtY, h, INNER_WORDS, {
+    font: fontSpec,
+    lineHeight,
+    colors: theme.textOnSurface,
+  })
 }
 
-async function paint() {
-  applyStoredTuningDefaults()
-  await document.fonts.load(getTextMetrics(tuningState.fontScale).font)
-  await reloadOutlineFromSvg()
-  rebuildPrepared()
+// ─── Boot ─────────────────────────────────────────────────────────────────────
 
-  buildTuningGui()
-
+async function init(): Promise<void> {
+  const initialFontSpec = `400 ${params.fontSize}px ${FONT_FAMILY}`
+  await document.fonts.load(initialFontSpec)
+  mask = await loadPngMask('/map-alpha.png')
   renderFrame()
-  window.addEventListener('resize', () => {
-    invalidateOutlineCache()
-    renderFrame()
-  })
+  window.addEventListener('resize', renderFrame)
 }
 
-paint().catch((e) => {
+init().catch((e: unknown) => {
   console.error(e)
   root.textContent = String(e)
 })
