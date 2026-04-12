@@ -265,6 +265,8 @@ export type WordFillOptions = {
   font: string
   lineHeight: number
   colors: string[]
+  /** When set, overrides per-word hash cycling (used for tier/year-coloured inner map). */
+  getWordColor?: (wordIdx: number) => string
   hoveredBox?: WordHitBox
   hoverRadiusX?: number
   hoverRadiusY?: number
@@ -285,7 +287,7 @@ export function drawWordsInShape(
   words: string[],
   opts: WordFillOptions,
 ): void {
-  const { font, lineHeight, colors, hoveredBox, hoverRadiusX, hoverRadiusY, onWord } = opts
+  const { font, lineHeight, colors, getWordColor, hoveredBox, hoverRadiusX, hoverRadiusY, onWord } = opts
   const rx = hoverRadiusX ?? 0
   const ry = hoverRadiusY ?? 0
   ctx.font = font
@@ -309,7 +311,9 @@ export function drawWordsInShape(
           const maxLetters = Math.floor((x - cx) / charW)
           if (maxLetters <= 0) break
           const letters = words[wordIdx % words.length].slice(0, maxLetters)
-          const color = colors[(wordIdx * 2654435761 >>> 0) % colors.length]
+          const color = getWordColor
+            ? getWordColor(wordIdx)
+            : colors[(wordIdx * 2654435761 >>> 0) % colors.length]
           const wordW = letters.length * charW
           onWord?.({ wordIdx, x: cx, y: rowY, w: wordW, h: lineHeight, color })
           const isHovered = hoveredBox !== undefined && (
